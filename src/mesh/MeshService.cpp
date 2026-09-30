@@ -288,7 +288,10 @@ bool MeshService::trySendPosition(NodeNum dest, bool wantReplies)
                 return false;
             }
             LOG_INFO("Send position ping to 0x%x, wantReplies=%d, channel=%d", dest, wantReplies, node->channel);
-            positionModule->sendOurPosition(dest, wantReplies, node->channel);
+            if (isBroadcast(dest))
+                positionModule->sendOurPosition();
+            else
+                positionModule->sendOurPosition(dest, wantReplies, node->channel);
             return true;
         }
     } else {
