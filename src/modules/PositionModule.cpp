@@ -22,6 +22,28 @@
 
 PositionModule *positionModule;
 
+static bool parsePrivatePositionChannel(const char *name, NodeNum &dest)
+{
+    if (name == nullptr || name[0] != '!' || strlen(name) != 9)
+        return false;
+
+    dest = 0;
+    for (size_t i = 1; i < 9; i++) {
+        char c = name[i];
+        uint8_t nibble;
+        if (c >= '0' && c <= '9')
+            nibble = c - '0';
+        else if (c >= 'a' && c <= 'f')
+            nibble = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F')
+            nibble = c - 'A' + 10;
+        else
+            return false;
+        dest = (dest << 4) | nibble;
+    }
+    return dest != 0 && !isBroadcast(dest);
+}
+
 PositionModule::PositionModule()
     : ProtobufModule("position", meshtastic_PortNum_POSITION_APP, &meshtastic_Position_msg), concurrency::OSThread("Position")
 {
@@ -327,19 +349,25 @@ meshtastic_MeshPacket *PositionModule::allocAtakPli()
 void PositionModule::sendOurPosition()
 {
     bool requestReplies = currentGeneration != radioGeneration;
+    bool cancelPrevious = true;
+    bool sentPublicPosition = false;
     currentGeneration = radioGeneration;
 
-    // If we changed channels, ask everyone else for their latest info
     LOG_INFO("Send pos@%x:6 to mesh (wantReplies=%d)", localPosition.timestamp, requestReplies);
-    for (uint8_t channelNum = 0; channelNum < 8; channelNum++) {
-        if (getPositionPrecisionForChannel(channelNum) != 0) {
-            sendOurPosition(NODENUM_BROADCAST, requestReplies, channelNum);
-            return;
+    for (uint8_t channelNum = 0; channelNum < channels.getNumChannels(); channelNum++) {
+        NodeNum dest;
+        if (parsePrivatePositionChannel(channels.getName(channelNum), dest)) {
+            sendOurPosition(dest, false, channelNum, cancelPrevious);
+            cancelPrevious = false;
+        } else if (!sentPublicPosition && getPositionPrecisionForChannel(channelNum) != 0) {
+            sendOurPosition(NODENUM_BROADCAST, requestReplies, channelNum, cancelPrevious);
+            cancelPrevious = false;
+            sentPublicPosition = true;
         }
     }
 }
 
-void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t channel)
+void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t channel, bool cancelPrevious)
 {
     if (!config.position.fixed_position && !nodeDB->hasLocalPositionSinceBoot()) {
         LOG_DEBUG("Skip position send; no fresh position since boot");
@@ -347,11 +375,14 @@ void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t cha
     }
 
     // cancel any not yet sent (now stale) position packets
-    if (prevPacketId) // if we wrap around to zero, we'll simply fail to cancel in that rare case (no big deal)
+    if (cancelPrevious && prevPacketId) // if we wrap around to zero, we'll simply fail to cancel in that rare case (no big deal)
         service->cancelSending(prevPacketId);
 
-    // Set the class precision value for this particular packet.
-    precision = getPositionPrecisionForChannel(channel);
+    // Private position channels always carry the exact coordinates.
+    NodeNum privatePositionDest;
+    bool isPrivatePosition = parsePrivatePositionChannel(channels.getName(channel), privatePositionDest) &&
+                             privatePositionDest == dest;
+    precision = isPrivatePosition ? 32 : getPositionPrecisionForChannel(channel);
 
     meshtastic_MeshPacket *p = allocPositionPacket();
     if (p == nullptr) {
@@ -370,6 +401,20 @@ void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t cha
 
     if (channel > 0)
         p->channel = channel;
+
+#if !(MESHTASTIC_EXCLUDE_PKI)
+    const meshtastic_Channel &positionChannel = channels.getByIndex(channel);
+    if (isPrivatePosition) {
+        if (positionChannel.settings.psk.size != 32) {
+            LOG_WARN("Private position channel %s requires a 32-byte public key", channels.getName(channel));
+            service->cancelSending(p->id);
+            return;
+        }
+        p->pki_encrypted = true;
+        p->public_key.size = 32;
+        memcpy(p->public_key.bytes, positionChannel.settings.psk.bytes, 32);
+    }
+#endif
 
     service->sendToMesh(p, RX_SRC_LOCAL, true);
 

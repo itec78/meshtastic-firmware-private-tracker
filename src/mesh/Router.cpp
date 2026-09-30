@@ -653,23 +653,23 @@ meshtastic_Routing_Error perhapsEncode(meshtastic_MeshPacket *p)
             config.security.private_key.size == 32 && !isBroadcast(p->to) &&
             // Some portnums either make no sense to send with PKC
             p->decoded.portnum != meshtastic_PortNum_TRACEROUTE_APP && p->decoded.portnum != meshtastic_PortNum_NODEINFO_APP &&
-            p->decoded.portnum != meshtastic_PortNum_ROUTING_APP && p->decoded.portnum != meshtastic_PortNum_POSITION_APP) {
+            p->decoded.portnum != meshtastic_PortNum_ROUTING_APP) {
             LOG_DEBUG("Use PKI!");
             if (numbytes + MESHTASTIC_HEADER_LENGTH + MESHTASTIC_PKC_OVERHEAD > MAX_LORA_PAYLOAD_LEN)
                 return meshtastic_Routing_Error_TOO_LARGE;
-            // Check for a known public key for the destination
-            if (node == nullptr || node->user.public_key.size != 32) {
+            meshtastic_UserLite_public_key_t destinationPublicKey = {};
+            if (p->pki_encrypted && p->public_key.size == 32) {
+                destinationPublicKey.size = 32;
+                memcpy(destinationPublicKey.bytes, p->public_key.bytes, 32);
+            } else if (node != nullptr && node->user.public_key.size == 32) {
+                destinationPublicKey = node->user.public_key;
+            }
+            if (destinationPublicKey.size != 32) {
                 LOG_WARN("Unknown public key for destination node 0x%08x (portnum %d), refusing to send legacy DM", p->to,
                          p->decoded.portnum);
                 return meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY;
             }
-            if (p->pki_encrypted && !memfll(p->public_key.bytes, 0, 32) &&
-                memcmp(p->public_key.bytes, node->user.public_key.bytes, 32) != 0) {
-                LOG_WARN("Client public key differs from requested: 0x%02x, stored key begins 0x%02x", *p->public_key.bytes,
-                         *node->user.public_key.bytes);
-                return meshtastic_Routing_Error_PKI_FAILED;
-            }
-            crypto->encryptCurve25519(p->to, getFrom(p), node->user.public_key, p->id, numbytes, bytes, p->encrypted.bytes);
+            crypto->encryptCurve25519(p->to, getFrom(p), destinationPublicKey, p->id, numbytes, bytes, p->encrypted.bytes);
             numbytes += MESHTASTIC_PKC_OVERHEAD;
             p->channel = 0;
             p->pki_encrypted = true;
