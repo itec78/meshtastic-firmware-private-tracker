@@ -21,6 +21,27 @@
 	<a href="https://meshtastic.org/docs/">Documentation</a>
 </div>
 
+## Private Tracker fork
+
+This repository is a fork of the official [Meshtastic firmware](https://github.com/meshtastic/firmware), based on version `2.7.26`. It adds encrypted private position transmission for tracker and handheld devices while preserving the standard Meshtastic mesh features.
+
+### Private Tracker features
+
+- Encrypted private position packets using Meshtastic PKI encryption.
+- Private position channels named `!XXXXXXXX`, where `XXXXXXXX` is the destination Node ID in hexadecimal.
+- The destination public key is configured in the private channel PSK field as a 32-byte key.
+- Full-precision coordinates for private position packets.
+- Separate public and private position transmissions.
+
+### Supported Private Tracker builds
+
+- **[Download firmware releases](https://github.com/itec78/meshtastic-firmware-private-tracker/releases)**
+
+- SenseCAP T1000-E
+- Elecrow ThinkNode M1
+- Lilygo T-Echo
+- Seeed Studio Wio Tracker L1
+
 ## Overview
 
 This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
