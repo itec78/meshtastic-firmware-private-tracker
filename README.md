@@ -32,15 +32,20 @@ This repository is a fork of the official [Meshtastic firmware](https://github.c
 - The destination public key is configured in the private channel PSK field as a 32-byte key.
 - Full-precision coordinates for private position packets.
 - Separate public and private position transmissions.
+- Scheduled position updates use a 10-minute default interval, with a 5-minute minimum.
+- Smart position updates support a 1-minute minimum interval when enabled.
+- Position requests are rate-limited to one reply every 10 seconds.
+- Position replies are sent on the configured public position channel and all valid private position channels.
+- When the requesting node has a matching private channel, it receives the private response instead of a generic public response.
 
 ### Supported Private Tracker builds
-
-- **[Download firmware releases](https://github.com/itec78/meshtastic-firmware-private-tracker/releases)**
 
 - SenseCAP T1000-E
 - Elecrow ThinkNode M1
 - Lilygo T-Echo
 - Seeed Studio Wio Tracker L1
+
+[Download firmware releases](https://github.com/itec78/meshtastic-firmware-private-tracker/releases)
 
 ## Overview
 
