@@ -296,15 +296,82 @@ meshtastic_MeshPacket *PositionModule::allocPositionPacket()
 
 meshtastic_MeshPacket *PositionModule::allocReply()
 {
+    // Limit requested position replies without delaying scheduled position sends.
     if (config.device.role != meshtastic_Config_DeviceConfig_Role_LOST_AND_FOUND && lastSentReply &&
-        Throttle::isWithinTimespanMs(lastSentReply, 3 * 60 * 1000)) {
-        LOG_DEBUG("Skip Position reply since we sent a reply <3min ago");
+        Throttle::isWithinTimespanMs(lastSentReply, 10 * 1000)) {
+        LOG_DEBUG("Skip Position reply since we sent a reply <10s ago");
         ignoreRequest = true; // Mark it as ignored for MeshModule
         return nullptr;
     }
 
+    // Use the request channel for the correlated reply, then mirror enabled position channels.
+    const meshtastic_MeshPacket *request = currentRequest;
+    uint8_t responseChannel = request ? request->channel : 0;
+    NodeNum responsePrivateDestination;
+    NodeNum requester = request ? getFrom(request) : NODENUM_BROADCAST;
+
+    // Prefer the requester's private channel so its position is never also sent publicly.
+    if (request && !isBroadcast(requester)) {
+        for (uint8_t channelNum = 0; channelNum < channels.getNumChannels(); channelNum++) {
+            NodeNum privateDestination;
+            if (parsePrivatePositionChannel(channels.getName(channelNum), privateDestination) &&
+                privateDestination == requester && channels.getByIndex(channelNum).settings.psk.size == 32) {
+                responseChannel = channelNum;
+                break;
+            }
+        }
+    }
+
+    bool responseChannelPrivate = responseChannel < channels.getNumChannels() &&
+                                  parsePrivatePositionChannel(channels.getName(responseChannel), responsePrivateDestination);
+    bool responseChannelEnabled = responseChannel < channels.getNumChannels() &&
+                                  ((responseChannelPrivate && channels.getByIndex(responseChannel).settings.psk.size == 32) ||
+                                   getPositionPrecisionForChannel(responseChannel) != 0);
+
+    if (!responseChannelEnabled) {
+        responseChannel = 0;
+        for (uint8_t channelNum = 0; channelNum < channels.getNumChannels(); channelNum++) {
+            NodeNum privateDestination;
+                        if ((parsePrivatePositionChannel(channels.getName(channelNum), privateDestination) &&
+                                 channels.getByIndex(channelNum).settings.psk.size == 32) ||
+                getPositionPrecisionForChannel(channelNum) != 0) {
+                responseChannel = channelNum;
+                break;
+            }
+        }
+    }
+
+    NodeNum privateDestination;
+    bool responseIsPrivate = parsePrivatePositionChannel(channels.getName(responseChannel), privateDestination);
+    precision = responseIsPrivate ? 32 : getPositionPrecisionForChannel(responseChannel);
     meshtastic_MeshPacket *reply = allocPositionPacket();
     if (reply) {
+        reply->to = request ? getFrom(request) : NODENUM_BROADCAST;
+        if (responseChannel > 0)
+            reply->channel = responseChannel;
+        if (responseIsPrivate && channels.getByIndex(responseChannel).settings.psk.size == 32) {
+            reply->pki_encrypted = true;
+            reply->public_key.size = 32;
+            memcpy(reply->public_key.bytes, channels.getByIndex(responseChannel).settings.psk.bytes, 32);
+        }
+
+        bool sentPublic = (responseIsPrivate && privateDestination == requester) || (!responseIsPrivate && precision != 0);
+        // Extra private packets retain their configured destination; public packets reply to the requester.
+        for (uint8_t channelNum = 0; channelNum < channels.getNumChannels(); channelNum++) {
+            if (channelNum == responseChannel)
+                continue;
+
+            NodeNum destination;
+            bool isPrivate = parsePrivatePositionChannel(channels.getName(channelNum), destination);
+            if (!isPrivate && (sentPublic || getPositionPrecisionForChannel(channelNum) == 0))
+                continue;
+            if (!isPrivate)
+                sentPublic = true;
+
+            NodeNum target = isPrivate ? destination : (request ? getFrom(request) : NODENUM_BROADCAST);
+            bool includeRequest = request && target == getFrom(request);
+            sendOurPosition(target, false, channelNum, false, includeRequest ? request : nullptr);
+        }
         lastSentReply = millis(); // Track when we sent this reply
     }
     return reply;
@@ -367,7 +434,8 @@ void PositionModule::sendOurPosition()
     }
 }
 
-void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t channel, bool cancelPrevious)
+void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t channel, bool cancelPrevious,
+                                     const meshtastic_MeshPacket *request)
 {
     if (!config.position.fixed_position && !nodeDB->hasLocalPositionSinceBoot()) {
         LOG_DEBUG("Skip position send; no fresh position since boot");
@@ -392,6 +460,12 @@ void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t cha
 
     p->to = dest;
     p->decoded.want_response = config.device.role == meshtastic_Config_DeviceConfig_Role_TRACKER ? false : wantReplies;
+    if (request) {
+        // Preserve the request route and acknowledgement correlation for extra replies.
+        p->hop_limit = request->hop_limit;
+        p->want_ack = request->from != 0 ? request->want_ack : false;
+        p->decoded.request_id = request->id;
+    }
     if (config.device.role == meshtastic_Config_DeviceConfig_Role_TRACKER ||
         config.device.role == meshtastic_Config_DeviceConfig_Role_TAK_TRACKER)
         p->priority = meshtastic_MeshPacket_Priority_RELIABLE;

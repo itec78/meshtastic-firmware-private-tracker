@@ -33,7 +33,8 @@ class PositionModule : public ProtobufModule<meshtastic_Position>, private concu
     /**
      * Send our position into the mesh
      */
-    void sendOurPosition(NodeNum dest, bool wantReplies = false, uint8_t channel = 0, bool cancelPrevious = true);
+    void sendOurPosition(NodeNum dest, bool wantReplies = false, uint8_t channel = 0, bool cancelPrevious = true,
+               const meshtastic_MeshPacket *request = nullptr);
     void sendOurPosition();
 
     void handleNewPosition();
